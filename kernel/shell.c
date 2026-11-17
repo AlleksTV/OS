@@ -119,7 +119,7 @@ static void cmd_date(int argc, char **argv) {
     (void)argc; (void)argv;
     struct rtc_time t;
     rtc_read(&t);
-    kprintf("%04d-%02d-%02d %02d:%02d:%02d (UTC, from CMOS real-time clock)\n",
+    kprintf("%04d-%02d-%02d %02d:%02d:%02d (from the CMOS real-time clock)\n",
             t.year, t.month, t.day, t.hour, t.minute, t.second);
 }
 

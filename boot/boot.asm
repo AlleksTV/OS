@@ -59,19 +59,57 @@ start:
 
 ; -----------------------------------------------------------------------------
 ;  ШАГ 1. Чтение ядра с диска.
-;  Используем расширенную функцию BIOS int 0x13, AH=0x42 (чтение по LBA).
-;  LBA (Logical Block Addressing) — сектора нумеруются просто 0, 1, 2, ...
 ;  Сектор 0 — это мы (загрузчик), ядро начинается с сектора 1.
-;  Читаем по одному сектору в цикле: это медленнее, но проще и надёжнее.
+;
+;  У BIOS есть два способа читать диск:
+;    - LBA (int 0x13, AH=0x42): сектора нумеруются просто 0, 1, 2, ...
+;      Работает для жёстких дисков и флешек.
+;    - CHS (int 0x13, AH=0x02): адрес сектора = (цилиндр, головка, сектор).
+;      Старый способ, но единственный для дискет. А при загрузке с CD/ISO
+;      BIOS обычно ЭМУЛИРУЕТ ДИСКЕТУ — поэтому нужен и он.
+;  Сначала спрашиваем BIOS, есть ли LBA (функция 0x41). Если нет — узнаём
+;  геометрию диска (функция 0x08) и читаем через CHS.
 ; -----------------------------------------------------------------------------
+    mov  ah, 0x41               ; "Поддерживаются ли расширения int 0x13?"
+    mov  bx, 0x55AA
+    mov  dl, [boot_drive]
+    int  0x13
+    jc   .use_chs               ; CF=1 — не поддерживаются
+    cmp  bx, 0xAA55             ; BIOS должен "перевернуть" 0x55AA
+    jne  .use_chs
+    test cl, 1                  ; Бит 0 CX = есть функция 0x42
+    jz   .use_chs
+    mov  byte [use_lba], 1
+    jmp  .read_kernel
+
+.use_chs:
+    mov  ah, 0x08               ; "Сообщи геометрию диска"
+    mov  dl, [boot_drive]
+    xor  di, di                 ; ES:DI = 0 (обход ошибки некоторых BIOS)
+    mov  es, di
+    int  0x13
+    jc   disk_error
+    and  cl, 0x3F               ; CL биты 0-5 = секторов на дорожке
+    mov  [sectors_per_track], cl
+    movzx ax, dh                ; DH = номер последней головки
+    inc  ax                     ; головок = последняя + 1
+    mov  [heads], ax
+
+.read_kernel:
     mov  cx, KERNEL_SECTORS     ; CX — счётчик цикла (сколько секторов осталось)
 .read_loop:
-    mov  si, disk_packet        ; DS:SI -> структура-запрос (Disk Address Packet)
-    mov  ah, 0x42               ; Функция "расширенное чтение"
-    mov  dl, [boot_drive]       ; С какого диска читать
-    int  0x13                   ; Вызов BIOS
-    jc   disk_error             ; Флаг CF=1 означает ошибку
+    mov  di, 3                  ; До 3 попыток (дисководы иногда ошибаются)
+.try:
+    call read_sector
+    jnc  .sector_ok             ; CF=0 — прочитали успешно
+    xor  ah, ah                 ; Функция 0x00: сброс дисковода
+    mov  dl, [boot_drive]
+    int  0x13
+    dec  di
+    jnz  .try
+    jmp  disk_error
 
+.sector_ok:
     add  word [dap_segment], 0x20   ; Следующий сектор кладём на 512 байт дальше
                                     ; (0x20 параграфов * 16 = 512 байт)
     add  dword [dap_lba], 1         ; Следующий номер сектора на диске
@@ -130,6 +168,43 @@ print_string:
     popa
     ret
 
+; read_sector: прочитать ОДИН сектор номер [dap_lba] в память [dap_segment]:0.
+; Результат: CF=0 — успех, CF=1 — ошибка. Все регистры сохраняются.
+read_sector:
+    pusha
+    cmp  byte [use_lba], 1
+    jne  .chs
+    mov  si, disk_packet        ; DS:SI -> структура-запрос (Disk Address Packet)
+    mov  ah, 0x42               ; Функция "расширенное чтение" (LBA)
+    mov  dl, [boot_drive]
+    int  0x13
+    popa                        ; popa не меняет флаги — CF сохраняется
+    ret
+
+.chs:
+    ; Перевод LBA -> CHS:
+    ;   сектор   = (LBA mod секторов_на_дорожке) + 1   (сектора нумеруются с 1!)
+    ;   головка  = (LBA / секторов_на_дорожке) mod головок
+    ;   цилиндр  = (LBA / секторов_на_дорожке) / головок
+    mov  ax, [dap_lba]
+    xor  dx, dx
+    div  word [sectors_per_track]   ; AX = LBA / spt, DX = остаток
+    mov  cl, dl
+    inc  cl                     ; CL = номер сектора
+    xor  dx, dx
+    div  word [heads]           ; AX = цилиндр, DX = головка
+    mov  dh, dl                 ; DH = головка
+    mov  ch, al                 ; CH = младшие 8 бит цилиндра
+    shl  ah, 6
+    or   cl, ah                 ; биты 8-9 цилиндра -> биты 6-7 CL
+    mov  dl, [boot_drive]
+    mov  es, [dap_segment]      ; ES:BX — куда читать
+    xor  bx, bx
+    mov  ax, 0x0201             ; AH=0x02 "прочитать", AL=1 сектор
+    int  0x13
+    popa
+    ret
+
 disk_error:
     mov  si, msg_disk_error
     call print_string
@@ -168,7 +243,10 @@ dap_segment:
 dap_lba:
     dq 1                        ; Номер сектора на диске (начинаем с 1)
 
-boot_drive: db 0
+boot_drive:        db 0
+use_lba:           db 0         ; 1 — читаем по LBA, 0 — по CHS
+sectors_per_track: dw 18        ; Геометрия (для CHS) — уточняется функцией 0x08
+heads:             dw 2
 
 msg_boot:       db "MiniOS bootloader: loading kernel", 0
 msg_loaded:     db " OK", 13, 10, "Switching to protected mode...", 0

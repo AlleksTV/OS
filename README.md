@@ -11,7 +11,7 @@ MiniOS — маленькая, но **настоящая** операционн�
 
 | Возможность | Что это показывает | Файл |
 |---|---|---|
-| Собственный загрузчик (512 байт) | Как компьютер начинает загрузку ОС | `boot/boot.asm` |
+| Собственный загрузчик (512 байт), загрузка с диска, дискеты или CD | Как компьютер начинает загрузку ОС | `boot/boot.asm` |
 | Переход в 32-битный защищённый режим | Режимы работы процессора, таблица GDT | `boot/boot.asm` |
 | Вывод текста на экран | Видеопамять, отображённая в память (memory-mapped I/O) | `kernel/vga.c` |
 | Обработка прерываний и исключений | IDT, контроллер прерываний PIC, «синий экран» | `kernel/interrupts.c`, `kernel/isr.asm` |
@@ -25,13 +25,29 @@ MiniOS — маленькая, но **настоящая** операционн�
 Всего около 2300 строк на C и ассемблере, с подробными комментариями.
 На экране MiniOS все надписи на английском: в текстовом режиме VGA нет русских букв.
 
-## Быстрый старт
+## Быстрый старт: VirtualBox (без сборки)
+
+Готовый загрузочный образ CD — [**`release/minios.iso`**](release/minios.iso) (откройте файл на GitHub и нажмите «Download raw file»).
+
+1. VirtualBox → **Создать**: имя `MiniOS`, поле «Образ ISO» оставить пустым,
+   тип **Other**, версия **Other/Unknown** (не 64-bit).
+2. Память **64 МБ**, EFI **выключен**, жёсткий диск — **«Не подключать»**.
+3. **Настроить → Носители** → пустой оптический привод → «Выбрать файл диска…» → `minios.iso`.
+4. **Запустить.** Щёлкните внутри окна, чтобы печатать; правый Ctrl возвращает клавиатуру в Windows.
+
+Подробная пошаговая инструкция и решение проблем:
+[docs/11-sborka-i-zapusk.md, раздел 11.1](docs/11-sborka-i-zapusk.md#111-самый-простой-способ-готовый-iso-в-virtualbox).
+Как BIOS загружает систему с CD — [docs/02-zagruzchik.md, раздел 2.5](docs/02-zagruzchik.md#25-загрузка-с-cd-iso-и-с-дискеты).
+
+## Сборка из исходников
 
 Нужен Linux (или WSL в Windows). В Ubuntu/Debian:
 
 ```bash
-sudo apt install build-essential nasm qemu-system-x86
+sudo apt install build-essential gcc-multilib nasm qemu-system-x86 xorriso
 make run          # собрать и запустить в окне QEMU
+make iso          # собрать build/minios.iso для VirtualBox
+make run-iso      # проверить ISO в QEMU (загрузка с CD)
 ```
 
 Если графического окна нет (например, по SSH): `make run-curses`.
@@ -80,9 +96,12 @@ halt / reboot             выключить / перезагрузить
 
 ```
 OS/
-├── Makefile                 сборка: make, make run, make debug, make clean
+├── Makefile                 сборка: make, make iso, make run, make debug, make clean
+├── release/
+│   ├── minios.iso           готовый загрузочный CD-образ (для VirtualBox)
+│   └── minios.img           готовый образ дискеты / жёсткого диска (для QEMU)
 ├── boot/
-│   └── boot.asm             загрузчик (MBR, 512 байт)
+│   └── boot.asm             загрузчик (MBR, 512 байт): чтение по LBA или CHS
 ├── kernel/
 │   ├── entry.asm            точка входа в ядро (_start), обнуление .bss
 │   ├── linker.ld            скрипт компоновщика: ядро по адресу 0x10000
